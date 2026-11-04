@@ -1,3 +1,5 @@
+> **This fork:** the `helix-floor` branch adds an experimental port to the Line 6 Helix Floor (3.80.0), in [`helix-floor/`](helix-floor/README.md). Everything else is upstream [hx-stomp-nam-lite](https://github.com/nocaseguy/hx-stomp-nam-lite) as of commit `2e80164`.
+
 # NAM A2 Lite for the HX Stomp
 
 This repository adds **Neural Amp Modeler (NAM) A2 Lite** to the stock Line 6 HX Stomp firmware, version 3.80.0, as a new amp model. NAM captures then run on the Stomp's own DSP, like any other amp block.

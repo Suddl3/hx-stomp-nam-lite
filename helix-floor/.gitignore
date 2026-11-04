@@ -1,0 +1,8 @@
+# firmware, captures and unpacked entries stay local
+work/
+convert/
+*.hxf
+*.l6ia
+*.bin
+*.wav
+*.nam
