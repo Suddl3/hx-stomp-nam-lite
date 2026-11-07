@@ -37,6 +37,7 @@ DMAC1, EIEP1, EMEP1, ECEP1, IIEP1, IMEP1, ICEP1, CPEP1 = 0x180C, 0x1830, 0x1831,
 T3 = dict(nm.T, T_NXO=18, T_NXN=19, T_NXB=20, T_NXR=21)
 T_SIZE3 = 22
 FT_SIZE = 12                        # the far layers' rows on chip for pump (fields 0..11)
+SLOTS = 2                           # NAM blocks per DSP (exp_ch1_meter may use 1)
 HEAD_FETCH = True                   # the head's 49 weights fetched on channel 1 (slot keeps rechannel + scale)
 SIL_SDRAM = True                    # the silence state in SDRAM after the weights, not in the slot
 WB = "group"                        # write-back: "group" (one shared 4-layer buffer) or "sb" (from SB)
@@ -256,7 +257,7 @@ class Regions(nf.Regions):
 
 class Layout(n2.Layout):
     def __init__(self, backoff=nm.BACKOFF_N, inst_bounds=None, tables_base=None):
-        slots = self.slots = 2
+        slots = self.slots = SLOTS
         self.far_d, self.staging = FAR_D, "b3"
         self.n_code, self.n_cold = code_sizes()
         self.far = [i for i, (k, d) in enumerate(zip(KERNEL, DILATION)) if k == 6 and d >= FAR_D]

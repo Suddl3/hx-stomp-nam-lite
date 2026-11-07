@@ -8,11 +8,12 @@ usage: meter_read.py [seconds | file.wav] [--device NAME] [--v2]
 (The Floor's Windows capture endpoint is 1 channel: USB 1, main L, comes in duplicated.)
 """
 import subprocess
+import os
 import sys
 
 import numpy as np
 
-DEVICE = "Digital Audio Interface (Line 6 Helix)"
+DEVICE = os.environ.get("METER_DEVICE", "Digital Audio Interface (Line 6 Helix)")   # "ASIO": the ASIO Helix driver
 RATE, BLOCK = 48000, 150000
 
 
@@ -28,7 +29,18 @@ def load(path):
     return subprocess.run(cmd, capture_output=True, check=True).stdout
 
 
+def record_asio(seconds):
+    """USB 1/2 from the ASIO Helix driver (no Windows mixer, sample exact); 2 x N float."""
+    os.environ["SD_ENABLE_ASIO"] = "1"
+    import sounddevice as sd
+    dev = [i for i, d in enumerate(sd.query_devices()) if d["name"] == "ASIO Helix"][0]
+    x = sd.rec(int(seconds * 44100), samplerate=44100, channels=8, device=dev, dtype="float32", blocking=True)
+    return x[:, :2].T
+
+
 def channels(path_or_seconds, device):
+    if device == "ASIO":
+        return record_asio(float(path_or_seconds))
     if str(path_or_seconds).replace(".", "").isdigit():
         raw = record(float(path_or_seconds), device)
     else:
@@ -74,8 +86,48 @@ def report_v2(ch):
     print("instance DM block (I0):", [hex(x) for x in dm[:4]], " PM block (I8):", [hex(x) for x in pm[:4]])
 
 
+def report_v4(ch):
+    """nam_floor5m v4: 16-sample frames of eight 2-sample fields, field 0 = +16384 (calibration)."""
+    n = np.round(ch * 32768).astype(np.int64)
+    best = None
+    for p in range(16):                  # the phase whose field 0 is a steady positive pair
+        m = (len(n) - p) // 16
+        if m < 10:
+            continue
+        f = n[p:p + 16 * m].reshape(m, 8, 2)
+        pair = (f[:, :, 0] == f[:, :, 1]).mean()
+        c = f[:, 0, 0]
+        steady = (c > 1000).mean() * (1.0 / (1.0 + np.std(c)))
+        score = pair + steady
+        if best is None or score > best[0]:
+            best = (score, f[:, :, 0])
+    if best is None:
+        print("no meter signal")
+        return
+    g = best[1].astype(float)
+    cal = np.median(g[:, 0])
+    gain = cal / 16384
+    print(f"frames {len(g)}; calibration field {cal:.0f} -> gain after the block x{gain:.4f} "
+          f"({20 * np.log10(max(gain, 1e-9)):+.2f} dB)")
+    v = np.round(g / gain).astype(np.int64)
+    cyc = -v[:, 1] * 8
+    q = np.percentile(cyc, [50, 99, 100])
+    print(f"cycles per call (gain-corrected): median {q[0]:,.0f} ({q[0] / BLOCK:.1%}), 99% {q[1]:,.0f}, max {q[2]:,.0f}")
+    print("I0 (DM block):", [hex(x * 16 + 0x80000) for x in np.unique(v[:, 2])[:4]],
+          " I8 (PM block):", [hex(-x * 64) for x in np.unique(v[:, 3])[:4]])
+    print("DM(3,I0) values seen:", np.unique(v[:, 4])[:6], " (1 = a knob write, cleared by the kernel)")
+    print("DM(7,I0) top:", [hex(-x) for x in np.unique(v[:, 5])[:4]], " low:", np.unique(v[:, 6])[:4])
+    for s in np.unique(-v[:, 7])[:4]:
+        print(f"state {s}: P_SLOT {s >> 3}, DM guard {'ok' if s & 4 else 'FAIL'}, "
+              f"PM guard {'ok' if s & 2 else 'FAIL'}, S_INIT {s & 1}")
+
+
 def main():
     argv = sys.argv[1:]
+    if "--v4" in argv:
+        argv.remove("--v4")
+        report_v4(channels(argv[0] if argv else "5", DEVICE)[0])
+        return
     if "--v2" in argv:
         argv.remove("--v2")
         report_v2(channels(argv[0] if argv else "5", DEVICE)[0])

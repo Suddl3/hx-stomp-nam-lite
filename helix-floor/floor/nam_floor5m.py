@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """METER variant of nam_floor5 (a test image only): every NAM block plays, instead of its output,
 numbers about this call, each an integer n < 32768 played as n / 32768 (exact through 16-bit USB
-capture), four samples each:
+capture). v4 (2026-11-04): eight fields of two samples, signs + - + - + - + -:
 
-  samples 0..3    this call's cycles / 8 (EMUCLK, from the call's start to the meter)
-  samples 4..7    -(the instance's PM block I8 / 64)          (v3; v2: the call's wait polls)
-  samples 8..11   (the instance's DM block I0 - 0x80000) / 16
-  samples 12..15  -(the instance's SDRAM block / 512)          (v3; v2: I8's, clipped in a split)
+  0  +16384 (0.5): calibration. Any gain between the block and USB 1 scales every field; the
+     reader divides by field 0 / 16384. (v1..v3 had none: see below.)
+  1  -(cycles / 8)            EMUCLK from the call's start to the meter
+  2  +(I0 - 0x80000) / 16     the caller's DM block
+  3  -(I8 / 64)               the caller's PM block
+  4  +DM(3, I0) & 0x7FFF      (the stock instance word, 1 in the sim's model of it)
+  5  -(DM(7, I0) >> 17)       the Model knob word's top bits (a float: sign, exponent, mantissa top)
+  6  +DM(7, I0) & 0x7FFF      its low bits (an int index)
+  7  -(P_SLOT*8 + DMok*4 + PMok*2 + S_INIT)  DMok/PMok = m_init's bounds guard on I0/I8
 
-`floor/meter_read.py --v2` finds the frame and prints each field.
+`floor/meter_read.py --v4` finds the frame (field 0) and prints each field.
+
+Why v4: v1..v3 read 41% more in a split path for every field at once (cycles 77.1K vs 54.6K,
+polls 391 vs 276, I0 field 9471 vs 6705: all x1.41 = +3 dB), the pattern of a gain on the meter
+tone (Split Y / Merge balance), not of a slower block. Field 0 settles it on the unit.
+
+Earlier versions (v3 = samples 0..3 cycles/8, 4..7 -(I8/64), 8..11 (I0-0x80000)/16, 12..15
+-(SDRAM block/512)):
 
 v2 on the Floor: plain path I0 0x9a310 / I8 0xe5de0, 276 polls; split path I0 0xa4ff0 (outside
 heap a!) / I8 beyond 0x100000, 391 polls, 77K cycles. v3 shows I8 and the SDRAM block in full.
@@ -35,38 +47,86 @@ PATCHES_M = [
 """),
     ("""x_nomsk:
 """, """x_nomsk:
-    R0 = EMUCLK;                        // (meter) cycles / 8, -PM block, DM block, -SDRAM block
+    R0 = EMUCLK;                        // (meter v4) eight 2-sample fields, signs + - + - ...
     R1 = DM(DCNT);
-    R0 = R0 - R1;
-    R0 = LSHIFT R0 BY -3;
-    R1 = DM(SAVE + 46);                 // (v3) the caller's I8 / 64
-    R1 = LSHIFT R1 BY -6;
-    R1 = -R1;
-    R2 = DM(SAVE + 31);                 // (the caller's I0: the instance's DM block)
+    R1 = R0 - R1;
+    R1 = LSHIFT R1 BY -3;
+    R1 = -R1;                           // 1: -cycles / 8
+    R0 = 16384;                         // 0: calibration, 0.5 (any gain after the block shows here)
+    R2 = DM(SAVE + 31);                 // 2: (the caller's I0 - 0x80000) / 16
+    I4 = R2;
     R3 = 0x80000;
     R2 = R2 - R3;
     R2 = LSHIFT R2 BY -4;
-    R3 = DM(G_SDR);                     // (v3) the instance's SDRAM block / 512
-    R3 = LSHIFT R3 BY -9;
+    R3 = DM(SAVE + 46);                 // 3: -(the caller's I8 / 64)
+    R3 = LSHIFT R3 BY -6;
     R3 = -R3;
-    F4 = 3.0517578125e-05;              // 1 / 32768
-    F0 = FLOAT R0;
-    F0 = F0 * F4;
-    F1 = FLOAT R1;
-    F1 = F1 * F4;
-    F2 = FLOAT R2;
-    F2 = F2 * F4;
-    F3 = FLOAT R3;
-    F3 = F3 * F4;
+    R8 = 0x7FFF;
+    R4 = DM(3, I4);                     // 4: DM(3, I0), low 15 bits (stock blocks: 1)
+    R4 = R4 AND R8;
+    R5 = DM(7, I4);                     // 5: -(DM(7, I0) >> 17)  (a float's sign, exponent, top)
+    R6 = R5 AND R8;                     // 6: DM(7, I0), low 15 bits (the Model knob as an int)
+    R5 = LSHIFT R5 BY -17;
+    R5 = -R5;
+    R7 = DM(P_SLOT, I4);                // 7: -(P_SLOT x 8 + DM guard x 4 + PM guard x 2 + S_INIT)
+    R9 = 7;
+    R7 = R7 AND R9;
+    R7 = LSHIFT R7 BY 3;
+    R11 = 4;
+    R9 = I4;
+    R10 = INST_DM_LO;
+    R9 = R9 - R10;
+    R10 = INST_DM_SPAN;
+    COMPU(R9, R10);
+    IF LE R7 = R7 + R11;
+    R11 = 2;
+    R9 = DM(SAVE + 46);
+    R10 = INST_PM_LO;
+    R9 = R9 - R10;
+    R10 = INST_PM_SPAN;
+    COMPU(R9, R10);
+    IF LE R7 = R7 + R11;
+    R9 = DM(SLOTTAB);
+    I5 = R9;
+    R9 = DM(S_INIT, I5);
+    R11 = 1;
+    R9 = R9 AND R11;
+    R7 = R7 + R9;
+    R7 = -R7;
+    F8 = 3.0517578125e-05;              // 1 / 32768
     I11 = B11;
-    LCNTR = 4, DO mt_0 UNTIL LCE;
-mt_0: PM(I11, M9) = R0;
-    LCNTR = 4, DO mt_1 UNTIL LCE;
-mt_1: PM(I11, M9) = R1;
-    LCNTR = 4, DO mt_2 UNTIL LCE;
-mt_2: PM(I11, M9) = R2;
-    LCNTR = 4, DO mt_3 UNTIL LCE;
-mt_3: PM(I11, M9) = R3;
+    F0 = FLOAT R0;
+    F0 = F0 * F8;
+    PM(I11, M9) = R0;
+    PM(I11, M9) = R0;
+    F1 = FLOAT R1;
+    F1 = F1 * F8;
+    PM(I11, M9) = R1;
+    PM(I11, M9) = R1;
+    F2 = FLOAT R2;
+    F2 = F2 * F8;
+    PM(I11, M9) = R2;
+    PM(I11, M9) = R2;
+    F3 = FLOAT R3;
+    F3 = F3 * F8;
+    PM(I11, M9) = R3;
+    PM(I11, M9) = R3;
+    F4 = FLOAT R4;
+    F4 = F4 * F8;
+    PM(I11, M9) = R4;
+    PM(I11, M9) = R4;
+    F5 = FLOAT R5;
+    F5 = F5 * F8;
+    PM(I11, M9) = R5;
+    PM(I11, M9) = R5;
+    F6 = FLOAT R6;
+    F6 = F6 * F8;
+    PM(I11, M9) = R6;
+    PM(I11, M9) = R6;
+    F7 = FLOAT R7;
+    F7 = F7 * F8;
+    PM(I11, M9) = R7;
+    PM(I11, M9) = R7;
 """),
     ("""    DM(REP + R_DMAC) = R0;
 """, ""),
@@ -83,7 +143,12 @@ _kernel_src = n5.kernel_src
 
 def kernel_src():
     src = _kernel_src()
-    for a, b in PATCHES_M:
+    pats = list(PATCHES_M)
+    if n5.P9_MODE == "nomask":            # (no x_nomsk: the meter goes after the exit's idle wait)
+        body = pats[1][1]
+        assert body.startswith("x_nomsk:\n")
+        pats[1] = ("x_idle:\n    R0 = DM(SAVE + 1);", "x_idle:\n" + body[len("x_nomsk:\n"):] + "    R0 = DM(SAVE + 1);")
+    for a, b in pats:
         assert src.count(a) == 1, a[:70]
         src = src.replace(a, b)
     return src

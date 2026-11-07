@@ -36,11 +36,15 @@ def main():
     bf.run(os.path.join(TOOLS, "hxf.py"), "unpack", stock, s0)
     diag = "--diag" in argv                  # the beep-code test image (nam_floor5d)
     meter = "--meter" in argv                # the cycles meter test image (nam_floor5m)
-    if diag or meter:
+    probe = "--probe" in argv                # the tap-list DMA probe image (nam_floor5t)
+    ch1 = "--ch1" in argv                    # weights on EP DMA channel 1 (exp_ch1_nomask: nam_floor4, no LRPTL)
+    if diag or meter or probe:
         os.environ["NAM_DIAG"] = "1"         # (no KernelCheck: the output is a code / the meter)
-        out = out.replace("NAM2_PERSONAL", "NAM2_DIAG" if diag else "NAM2_METER")
+        out = out.replace("NAM2_PERSONAL", "NAM2_DIAG" if diag else "NAM2_PROBE" if probe else "NAM2_METER")
+        out = out.replace("NAM2_CH1", "NAM2_CH1_METER") if meter and "METER" not in out else out
     os.environ["NAM_KERNEL"], os.environ["NAM_MAX_BLOCKS"] = \
-        ("nam_floor5d" if diag else "nam_floor5m" if meter else "nam_floor5"), "16"
+        ("nam_floor5d" if diag else "nam_floor5t" if probe else "exp_ch1_meter" if (meter and ch1) else "nam_floor5m" if meter
+         else "exp_ch1_nomask" if ch1 else "nam_floor5"), "16"
     os.environ["NAM_MAX_STEADY"] = "60000"           # (bit-exact still checked; speed judged on the unit)
     bf.run(os.path.join(HERE, "stage_slots2.py"), s0, s1)
     bf.run(os.path.join(HERE, "stage_model.py"), s1, s2)

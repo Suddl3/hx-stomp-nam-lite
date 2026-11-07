@@ -35,7 +35,12 @@ BLIST_PTR_TAB, BLIST_CNT_TAB = 0x28134220, 0x28134350
 SUBCAT_CNT, SUBCAT_NAMES = 0x28134480, 0x281344CC
 CAVE, CAVE_END = 0x10011870, 0x10020000
 SEG0 = (0x10000000, 0x11870)
-DSP_COST = 2700            # ~30% of a DSP's 9000; upstream's measured-Stomp 2345 plus margin for Block 3 code
+# 2026-11-06: 2700 (~30%) was too low: the Floor meter reads ~37% a NAM call (55K of ~150K cycles),
+# plus ~1% graph overhead (Stomp). Upstream calibrated ~100 units a 1% real, the 9,000 cap at ~95.7%
+# real, and saw an overloaded DSP hang the UI/USB while audio plays on (the freezes seen on the test unit).
+# 3800 refuses 2 NAMs on one path (7,600 + the ~1,500 an empty preset counts > 9,000), as the unit
+# needs, and admits ~3,700 units of effects beside one. Floor calibration still to measure.
+DSP_COST = int(os.environ.get("NAM_DSP_COST", "3600"))   # 11-07: measured ~35% a call on the unit (meter 52.8K of ~150K cycles)
 NAME, DISPLAY, SHORT, FOLDER = 'HD2_AmpNAMLite', 'NAM A2 Lite', 'NAM A2 Lite', (12, 'NAM')
 
 

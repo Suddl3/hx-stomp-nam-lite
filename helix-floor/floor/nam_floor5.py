@@ -18,6 +18,7 @@ Memory beyond the test2c regions spills into RX (simulator only); the report sho
 usage: nam_floor5.py [--check] [--bench]
 """
 import inspect
+import math
 import os
 import sys
 
@@ -246,11 +247,33 @@ def kernel_src():
       I9 = R0;
       M8 = DM(T_NW, I4);
 """ + src[b:]
-    if P9_SHARE:
+    if P9_MODE == "nomask":
+        for a, b in NOMASK_PATCHES:
+            assert src.count(a) == 1, a[:70]
+            src = src.replace(a, b)
+    elif P9_SHARE:
         for a, b in SHARE_PATCHES:
             assert src.count(a) == 1, a[:70]
             src = src.replace(a, b)
+        if P9_KEEP_LATCH:
+            assert src.count(LATCH_CLR) == 1
+            src = src.replace(LATCH_CLR, "")
     src = patch_head(src) if HEAD_FETCH else src
+    if PM_RECHECK:
+        for a, b in (PMB_PATCH, GUARD_PATCH):
+            assert src.count(a) == 1, a[:70]
+            src = src.replace(a, b)
+    if GATHER:
+        for a, b in (G_TAP, G_GO) + ((G_W,) if GATHER_W else ()):
+            assert src.count(a) == 1, a[:70]
+            src = src.replace(a, b)
+    if MID_PUMP:
+        for a, b in (MP_LOOP, MP_END):
+            assert src.count(a) == 1, a[:70]
+            src = src.replace(a, b)
+        a = "\nlwait:\n"
+        assert src.count(a) == 1
+        src = src.replace(a, MP_SUB + a)
     if P9_SHARE and not KEEP_POLLS:      # room for it: the wait-poll count (REP R_POLLS /
         n = src.count(POLL_INC)          # R_MAXPOLLS) only fed the simulator's bench and the meters
         src = src.replace(POLL_INC, "")
@@ -259,6 +282,63 @@ def kernel_src():
         assert src.count(POLL_CLR) == 1
         src = src.replace(POLL_CLR, "")
     return src
+
+
+# Safety (2026-11-04): the near rings' pointers (S_RP) and the bounds guard are m_init's, from
+# I0 and I8. A new I0 already restarts the slot (I0 is the owner key), but a new I8 with the same
+# I0 would leave the PM rings writing into another block's memory. So every call compares I8
+# with the slot's S_PMB (state word 71, free: S_LW is 48..70, the stream starts at 72); a change
+# restarts the slot, and m_init's guard then accepts the new blocks or the block plays silence.
+PM_RECHECK = True
+S_PMB = 71
+PMB_PATCH = ("""m_slot:
+    DM(S_LAST, I6) = R12;
+""", """m_slot:
+    DM(S_LAST, I6) = R12;
+    R0 = DM(SAVE + 46);                 // the instance's PM block (I8) changed: start again
+    R1 = DM(S_PMB, I6);                 // (m_init's guard and ring pointers come from I0, I8)
+    COMP(R0, R1);
+    IF EQ JUMP m_pmok;
+    DM(S_PMB, I6) = R0;
+    R1 = 0;
+    DM(S_INIT, I6) = R1;
+m_pmok:
+""")
+# Room for it: m_init's bounds guard as two unsigned range checks (I0 - LO <= HI - NEED - LO,
+# the same for I8): the same accept/reject rule as nam_floor's four signed compares, 6 fewer.
+GUARD_PATCH = ("""m_init:
+    R0 = I0;
+    R1 = INST_DM_LO;
+    COMP(R0, R1);
+    IF LT RTS;
+    R1 = INST_DM_NEED;
+    R0 = R0 + R1;
+    R1 = INST_DM_HI;
+    COMP(R0, R1);
+    IF GT RTS;
+    R0 = DM(SAVE + 46);
+    R1 = INST_PM_LO;
+    COMP(R0, R1);
+    IF LT RTS;
+    R1 = INST_PM_NEED;
+    R0 = R0 + R1;
+    R1 = INST_PM_HI;
+    COMP(R0, R1);
+    IF GT RTS;
+""", """m_init:
+    R0 = I0;                            // the DM block: I0 - LO <= HI - NEED - LO, unsigned
+    R1 = INST_DM_LO;                    // (below LO wraps to a huge value: out too)
+    R0 = R0 - R1;
+    R1 = INST_DM_SPAN;
+    COMPU(R0, R1);
+    IF GT RTS;
+    R0 = DM(SAVE + 46);                 // the PM block (I8 at entry), the same
+    R1 = INST_PM_LO;
+    R0 = R0 - R1;
+    R1 = INST_PM_SPAN;
+    COMPU(R0, R1);
+    IF GT RTS;
+""")
 
 
 POLL_INC = """    R0 = DM(REP + R_POLLS);
@@ -282,6 +362,18 @@ POLL_CLR = """    DM(REP + R_POLLS) = R0;
 P9_SHARE = True                     # (hardware: the Floor needs it, diag v4 played)
 KEEP_POLLS = False                  # (nam_floor5m: the meter reports the wait polls)
 EP0LAT = 0x8                        # LIRPTL P9I latch (P6I..P15I = bits 0..9)
+# 2026-11-06 freeze suspect: the exit clears the P9I latch unless set at entry. A Line 6 channel-0
+# completion during our call (their transfer started by a higher-priority ISR) would be wiped, and
+# their handler never runs: their side waits forever (UI freezes, audio plays on). P9_KEEP_LATCH
+# leaves the latch alone: Line 6's handler then runs once after each NAM call (for our own chain
+# ends too, a spurious completion it has to tolerate). Test image NAM2_KEEPLATCH.
+P9_KEEP_LATCH = os.environ.get("NAM_KEEP_LATCH") == "1"
+LATCH_CLR = f"""    R1 = {EP0LAT:#x};
+    R1 = R0 AND R1;
+    IF NE JUMP x_lat;
+    BIT CLR LRPTL {EP0LAT:#x};                 // (our own chain ends' latch)
+x_lat:
+"""
 SHARE_PATCHES = [
     ("""    DM(SAVE + 1) = R0;
 """, """    DM(SAVE + 1) = R0;
@@ -332,10 +424,229 @@ da_w: R0 = DM(DMAC0);
 ]
 
 
+# 2026-11-06 ROOT CAUSE of the freezes: P9I is NOT EP DMA channel 0 on the Floor (nor the Stomp).
+# Both stock DSP programs rewrite PICR0..2 at boot (0x8c12c..0x8c133: 0x0A821C66 / 0x241D6570 /
+# 0x000DDC13): P9I = code 0x1A = LP1I (link port 1), P8I = LP0I; EPDM0I (0x09) and EPDM1I (0x0D)
+# are routed nowhere, so neither EP DMA channel raises any interrupt. The Floor keeps P9I unmasked
+# because it runs link port 1 between its two SHARCs (the Stomp has one DSP: masked). P9_SHARE
+# masked the inter-DSP link interrupt for ~37% of every block (lag) and HONEST cleared its latch:
+# a lost link-port interrupt hangs the DSP<->DSP/host messaging -> UI frozen, audio on.
+# P9_MODE "nomask": never touch LIRPTL; use channel 0 whenever DMAC0 is idle (no interrupt can fire),
+# keep the waits for a fully idle channel at exit and in dma_abort.
+P9_MODE = os.environ.get("NAM_P9_MODE", "nomask")      # "nomask" (fix) | "share" (old images)
+NOMASK_PATCHES = [
+    ("""    IF NE JUMP m_busy;
+    R0 = LRPTL;
+    R1 = EP0IMSK;
+    R1 = R0 AND R1;
+    IF EQ JUMP m_idle;
+m_busy:""", """    IF EQ JUMP m_idle;                  // (P9I is link port 1 here, not this channel: leave it)
+m_busy:"""),
+    ("""// METER_EXIT
+    R0 = DM(SAVE + 1);""", """// METER_EXIT
+    R2 = 1000;                          // the channel fully idle before Line 6 runs again
+x_w: R1 = DM(DMAC0);
+    R3 = BUSYM;
+    R1 = R1 AND R3;
+    IF EQ JUMP x_idle;
+    R2 = R2 - 1;
+    IF NE JUMP x_w;
+x_idle:
+    R0 = DM(SAVE + 1);"""),
+    SHARE_PATCHES[3],
+]
+
+
+# 2026-11-07 speed: the channel idles mid-layer (sim: 41.7K/call with real DMA timing, 29.0K with
+# instant DMA). MID_PUMP = n splits each layer's 8-pair loop into n chunks; between chunks, out of SIMD,
+# if channel 0 is idle, pump starts the next ready job (I0-I3, I5, L1, L2 kept in MPS; M4 = 0, R3 = 0
+# restored). 0 = off (the installed NOMASK).
+MID_PUMP = int(os.environ.get("NAM_MID_PUMP", "0"))
+MP_LOOP = ("""      LCNTR = 8, DO n_pair UNTIL LCE;""", """      LCNTR = MP_OUTER, DO n_mp UNTIL LCE;
+      LCNTR = MP_INNER, DO n_pair UNTIL LCE;""")
+MP_END = ("""n_pair: DM(I3, M6) = F13;
+      BIT CLR MODE1 PEYEN | BDCST9;""", """n_pair: DM(I3, M6) = F13;
+      BIT CLR MODE1 PEYEN | BDCST9;
+      CALL mpump;
+      BIT SET MODE1 PEYEN | BDCST9;
+      NOP;                              // (no CALL in a loop's last three instructions)
+      NOP;
+n_mp: NOP;
+      BIT CLR MODE1 PEYEN | BDCST9;""")
+MP_SUB = """
+// Mid-layer pump (out of SIMD): channel 0 idle -> pump, keeping the pair loop's pointers.
+mpump:
+    R0 = DM(DMAC0);
+    R1 = BUSYM;
+    R0 = R0 AND R1;
+    IF NE RTS;
+    DM(MPS + 0) = I0;
+    DM(MPS + 1) = I1;
+    DM(MPS + 2) = I2;
+    DM(MPS + 3) = I3;
+    DM(MPS + 4) = I5;
+    DM(MPS + 5) = L1;
+    DM(MPS + 6) = L2;
+    CALL pump;
+    I0 = DM(MPS + 0);
+    I1 = DM(MPS + 1);
+    I2 = DM(MPS + 2);
+    I3 = DM(MPS + 3);
+    I5 = DM(MPS + 4);
+    L1 = DM(MPS + 5);
+    L2 = DM(MPS + 6);
+    M4 = 0;
+    R3 = 0;
+    RTS;
+"""
+
+
+# 2026-11-07 speed: half the sim's DMA time is per-TCB overhead (303 TCBs a call). GATHER: a far layer's
+# taps as ONE scatter/gather (tap list) TCB (HRM 4-133; TCB Table 3-26: CP, TPEP, TCEP, EMEP, EIEP, ICEP,
+# IMEP, IIEP; DMACx TLEN; block i word k at EIEP + TL[i] + EMEP * k, measured on the unit) with 18 entries,
+# 6c + t = tap t of channel c (t = 5: the next window, overwritten by fcopy), + a 1-word tap-list
+# sentinel. 192 -> 24 TCBs a call for the tap jobs.
+GATHER = os.environ.get("NAM_GATHER") == "1"
+PRB_WORDS = 0                       # (nam_floor5t: the tap-list probe's buffer)
+TLEN = 0x200
+GTCB = 8
+G_TAP = ("""    // a far layer's taps: TCB 3t + c reads tap t (oldest first) of channel c
+    I3 = DM(J_ROW, I5);
+    I0 = DM(J_CHAIN, I5);
+    MODIFY(I0, TCB_EI);
+    R8 = DM(G_SDR);
+    R1 = DM(T_RB, I3);
+    R8 = R8 + R1;                       // channel 0's ring
+    M4 = DM(T_LW, I3);
+    R2 = DM(M4, I6);                    // this block's write offset
+    R10 = DM(T_L, I3);
+    R1 = DM(T_KD, I3);
+    R2 = R2 + R1;                       // the oldest tap's window
+    IF LT R2 = R2 + R10;
+    R3 = DM(T_D, I3);
+    R6 = DM(T_STRIDE, I3);
+    LCNTR = KM1, DO p_rl UNTIL LCE;
+      R1 = R8 + R2;
+      R1 = R1 + R6, DM(I0, 6) = R1;     // (each store with the next channel's address)
+      R1 = R1 + R6, DM(I0, 6) = R1;
+      R2 = R2 + R3, DM(I0, 6) = R1;
+      COMP(R2, R10);
+p_rl: IF GE R2 = R2 - R10;
+    R1 = DM(G_SDR);                     // the sentinel TCB: MAGIC from SENT into the flag
+    R2 = SENT_OFF;
+    R1 = R1 + R2;
+    DM(0, I0) = R1;
+    I0 = DM(J_FLAG, I5);""", """    // a far layer's taps (GATHER): one tap-list TCB; entry 6c + t = tap t of channel c, as
+    // offsets from EIEP = channel 0's ring (block i at EIEP + TL[i]: measured, TLPROBE2)
+    I3 = DM(J_ROW, I5);
+    I0 = DM(J_CHAIN, I5);
+    R8 = DM(G_SDR);
+    R1 = DM(T_RB, I3);
+    R8 = R8 + R1;                       // channel 0's ring
+    DM(4, I0) = R8;                     // TCB 0's EIEP (post-modify: block i at EIEP + TL[i], unit 11-07)
+    M4 = DM(T_LW, I3);
+    R2 = DM(M4, I6);                    // this block's write offset
+    R10 = DM(T_L, I3);
+    R1 = DM(T_KD, I3);
+    R2 = R2 + R1;                       // the oldest tap's window
+    IF LT R2 = R2 + R10;
+    R3 = DM(T_D, I3);
+    R6 = DM(T_STRIDE, I3);
+    R1 = DM(G_SDR);                     // TCB 1, the sentinel: MAGIC from SENT into the flag
+    R0 = SENT_OFF;
+    R1 = R1 + R0;
+    DM(12, I0) = R1;
+    MODIFY(I0, 16);                     // the tap list, after the two TCBs
+    LCNTR = 6, DO p_rl UNTIL LCE;
+      R1 = R2 + R6, DM(0, I0) = R2;     // channel 0 at entry t, 1 at 6 + t, 2 at 12 + t
+      R1 = R1 + R6, DM(6, I0) = R1;
+      R2 = R2 + R3, DM(12, I0) = R1;
+      COMP(R2, R10);
+      IF GE R2 = R2 - R10;
+p_rl: MODIFY(I0, 1);
+    I0 = DM(J_FLAG, I5);""")
+# GATHER_W: a write-back group as one scatter TCB per far layer (tap list [0, s, 2s] from its ring's
+# write address - 1) + the sequence-number TCB, all tap-list TCBs: 3 * gmax + 1 -> gmax + 1 TCBs.
+GATHER_W = GATHER and os.environ.get("NAM_GATHER_W", "1") == "1"
+G_W = ("""    L1 = 0;
+    L2 = 0;
+    R1 = DM(J_CHAIN, I5);
+    R2 = TCB_EI;
+    R1 = R1 + R2;
+    I0 = R1;
+    I1 = DM(J_ROW, I5);                 // (FARTAB + the group's first far layer)
+    I2 = DM(J_FLAG, I5);                // (WADDR + the same)
+    R2 = DM(J_N, I5);
+    LCNTR = R2, DO p_wl UNTIL LCE;
+      I3 = I1;
+      MODIFY(I1, FT_SIZE);
+      R6 = DM(T_STRIDE, I3);
+      R1 = DM(I2, 1);
+      DM(I0, 6) = R1;
+      R1 = R1 + R6;
+      DM(I0, 6) = R1;
+      R1 = R1 + R6;
+p_wl: DM(I0, 6) = R1;
+    R1 = DM(G_SDR);
+    R2 = SENT2_OFF;
+    R1 = R1 + R2;
+    DM(0, I0) = R1;
+    DM(J_CHKADR) = R1;
+    R1 = I6;
+    R2 = S_SEQ;
+    R1 = R1 + R2;
+    DM(3, I0) = R1;                     // (TCB_II - TCB_EI)
+    R1 = DM(S_SEQ, I6);
+    R1 = R1 + 1;
+    DM(S_SEQ, I6) = R1;
+    DM(J_CHKVAL) = R1;
+    R0 = TRAN;                          // internal -> external""", """    L1 = 0;
+    L2 = 0;
+    I0 = DM(J_CHAIN, I5);               // (GATHER_W) the group's first scatter TCB
+    I1 = DM(J_ROW, I5);                 // (FARTAB + the group's first far layer)
+    I2 = DM(J_FLAG, I5);                // (WADDR + the same)
+    R2 = DM(J_N, I5);
+    LCNTR = R2, DO p_wl UNTIL LCE;
+      I3 = I1;
+      MODIFY(I1, FT_SIZE);
+      R6 = DM(T_STRIDE, I3);
+      R1 = DM(I2, 1);
+      DM(4, I0) = R1;                   // EIEP: channel 0's window
+      I3 = DM(1, I0);                   // its tap list [0, s, 2s]
+      DM(1, I3) = R6;
+      R6 = R6 + R6;
+      DM(2, I3) = R6;
+p_wl: MODIFY(I0, GTCB);
+    R1 = DM(G_SDR);                     // the sequence-number TCB
+    R2 = SENT2_OFF;
+    R1 = R1 + R2;
+    DM(J_CHKADR) = R1;
+    DM(4, I0) = R1;
+    R1 = I6;
+    R2 = S_SEQ;
+    R1 = R1 + R2;
+    DM(7, I0) = R1;
+    R1 = DM(S_SEQ, I6);
+    R1 = R1 + 1;
+    DM(S_SEQ, I6) = R1;
+    DM(J_CHKVAL) = R1;
+    R0 = TRAN | TLEN;                   // internal -> external, tap list""")
+G_GO = ("""    R1 = MAGIC;
+    DM(J_CHKVAL) = R1;
+    R0 = 0;                             // external -> internal
+    JUMP p_go;
+p_w:""", """    R1 = MAGIC;
+    DM(J_CHKVAL) = R1;
+    R0 = TLEN;                          // external -> internal, tap list
+    JUMP p_go;
+p_w:""")
+
+
 def names():
     return nf.names() + ["HFLAG", "HDR_RECH", "T_NXN", "T_NXO", "T_NXB", "T_NXR", "W_OFF", "HDR", "SIL_N",
-                         "N_WEIGHTS", "LBROW0", "LBSUM", "LBF0", "LBF1", "DIAG", "DCNT", "DCAUSE", "FT_SIZE"] + \
-        (["MSKD"] if P9_SHARE else [])
+                         "N_WEIGHTS", "LBROW0", "LBSUM", "LBF0", "LBF1", "DIAG", "DCNT", "DCAUSE", "FT_SIZE",
+                         "S_PMB", "INST_DM_SPAN", "INST_PM_SPAN"] + \
+        (["MSKD"] if P9_SHARE and P9_MODE != "nomask" else []) + (["MPS", "MP_INNER", "MP_OUTER"] if MID_PUMP else []) +         (["TLEN", "GTCB"] if GATHER else [])
 
 
 def equs(v):
@@ -422,6 +733,8 @@ class Layout(n2.Layout):
         v = {k: x for k, x in list(nm.S.items()) + list(nm.ST.items()) + list(nm.REPW.items()) + list(T3.items())
              + list(nm.J.items()) + list(nm.P.items())}
         v["ST_SIL"] = (4 if HEAD_FETCH else HDR)
+        assert nm.S["S_LW"] + NL <= S_PMB < nm.S_STREAM, "S_PMB is not a free state word"
+        v["S_PMB"] = S_PMB
         if HEAD_FETCH:
             v["ST_SCALE"] = 3
         rg = self.rg = Regions()
@@ -459,14 +772,15 @@ class Layout(n2.Layout):
         nj = len(self.queue)
         self.lbw = 1 + T_SIZE3 + LB_N                    # a layer buffer: flag, row, weights
         sizes = dict(FLAGREP=32, SAVE=64, SLOTTAB=slots, IN=16, X=48, HS=48, LB=2 * self.lbw, SB=2 * nm.SB_WORDS,
-                     **({} if WB == "sb" else {"OUTBUF": 48 * max(len(g) for g in self.groups)}), RCH0=16 * nm.TCB, RCH1=16 * nm.TCB, LCH=2 * nm.TCB, JOBS=nj * nm.JOB,
+                     **({} if WB == "sb" else {"OUTBUF": 48 * max(len(g) for g in self.groups)}), RCH0=(2 * GTCB + 19) if GATHER else 16 * nm.TCB, RCH1=(2 * GTCB + 19) if GATHER else 16 * nm.TCB, LCH=2 * nm.TCB, JOBS=nj * nm.JOB,
                      FTAB=F * FT_SIZE, WADDR=F, FCH0=3 * nm.TCB, FCH1=3 * nm.TCB,
-                     **{f"SLOT{j}": self.slot_size for j in range(slots)}, **({"MSKD": 1} if P9_SHARE else {}))
+                     **{f"SLOT{j}": self.slot_size for j in range(slots)}, **({"MSKD": 1} if P9_SHARE and P9_MODE != "nomask" else {}),
+                     **({"MPS": 8} if MID_PUMP else {}), **({"PRB": PRB_WORDS} if PRB_WORDS else {}))
         if WB == "sb":
             for b in range(2):
                 sizes[f"WCH{b}"] = (3 + 1) * nm.TCB
         else:
-            sizes["WCH0"] = (3 * self.gmax + 1) * nm.TCB
+            sizes["WCH0"] = (self.gmax + 1) * GTCB + 3 * self.gmax + 1 if GATHER_W else (3 * self.gmax + 1) * nm.TCB
         self.nclr = C + C * len(near)
         for name, n in sorted(sizes.items(), key=lambda x: -x[1]):
             even = name.startswith("SLOT")
@@ -507,6 +821,9 @@ class Layout(n2.Layout):
             a += n
         self.ddr2_to = a
         (dlo, dhi), (plo, phi) = inst_bounds or (n2.HEAP_A2, n2.HEAP_B2)
+        v["INST_DM_SPAN"] = dhi - self.inst_dm_need - dlo      # (GUARD_PATCH's unsigned checks)
+        v["INST_PM_SPAN"] = phi - self.inst_pm_need - plo
+        assert v["INST_DM_SPAN"] >= 0 and v["INST_PM_SPAN"] >= 0
         v.update(SAVE=alloc["SAVE"], REP=self.rep, SLOTTAB=alloc["SLOTTAB"], NSLOTS=slots, IN=alloc["IN"],
                  X=alloc["X"], HS=alloc["HS"], TABLE=0, NLAYERS=NL, JOBS=alloc["JOBS"],
                  LBROW0=self.lb[0], LBSUM=self.lb[0] + self.lb[1], LBF0=self.fflags[0], LBF1=self.fflags[1], FT_SIZE=FT_SIZE,
@@ -527,7 +844,10 @@ class Layout(n2.Layout):
                  INST_PM_LO=plo, INST_PM_HI=phi, INST_DM_NEED=self.inst_dm_need, INST_PM_NEED=self.inst_pm_need,
                  W_OFF=self.w_off, HDR=HDR, HDR_RECH=3 if HEAD_FETCH else HDR,
                  HFLAG=self.fflags[1], SIL_N=SIL, N_WEIGHTS=nam_lite.N_WEIGHTS, 
-                 DIAG=b3 + 13, DCNT=b3 + 14, DCAUSE=b3 + 15, **({"MSKD": alloc["MSKD"]} if P9_SHARE else {}))
+                 DIAG=b3 + 13, DCNT=b3 + 14, DCAUSE=b3 + 15, **({"MSKD": alloc["MSKD"]} if P9_SHARE and P9_MODE != "nomask" else {}),
+                 **({"MPS": alloc["MPS"], "MP_INNER": 8 // MID_PUMP, "MP_OUTER": MID_PUMP} if MID_PUMP else {}),
+                 **({"TLEN": TLEN, "GTCB": GTCB} if GATHER else {}),
+                 **({"PRB": alloc["PRB"]} if PRB_WORDS else {}))
         self.v = v
         self.b3_to = None
 
@@ -626,6 +946,10 @@ class Layout(n2.Layout):
             return [cp & 0x7FFFF if cp else 0, 1, 0, ic, 1, ii]
 
         for b, ch in enumerate((al["RCH0"], al["RCH1"])):
+            if GATHER:                         # TCB 0 (18 taps of 16), TCB 1 (sentinel), tap list, 0
+                put(ch, [(ch + GTCB + 7) & 0x7FFFF, ch + 16, 18, 1, 0, 16, 1, self.sb[b]] +
+                        [0, ch + 34, 1, 1, 0, 1, 1, self.flags[b]] + [0] * 18 + [0])
+                continue
             t = []
             for n in range(15):
                 tt, c = divmod(n, 3)
@@ -639,6 +963,14 @@ class Layout(n2.Layout):
                     t += tcb(al[f"WCH{b}"] + nm.TCB * (c + 1) + nm.TCB_II, 16, self.sb[b] + 80 + 96 * c)
                 t += tcb(0, 1, 0)
                 put(al[f"WCH{b}"], t)
+        elif GATHER_W:                         # gmax scatter TCBs, the sequence TCB, tap lists, a 0
+            w0, g = al["WCH0"], self.gmax
+            tl = w0 + (g + 1) * GTCB
+            t = []
+            for jj in range(g):
+                t += [(w0 + GTCB * (jj + 1) + 7) & 0x7FFFF, tl + 3 * jj, 3, 1, 0, 16, 1, al["OUTBUF"] + 48 * jj]
+            t += [0, tl + 3 * g, 1, 1, 0, 1, 1, 0] + [0] * (3 * g) + [0]
+            put(w0, t)
         else:
             t = []
             for m in range(3 * self.gmax):
@@ -655,12 +987,13 @@ class Layout(n2.Layout):
         for thr, _, kind, j in self.jobs:
             if kind == "R":
                 ch = (al["RCH0"], al["RCH1"])[j % 2]
-                jobs += [0, thr, al["FTAB"] + FT_SIZE * j, ch, self.flags[j % 2], (ch + nm.TCB_II) & 0x7FFFF, 0, 0]
+                jobs += [0, thr, al["FTAB"] + FT_SIZE * j, ch, self.flags[j % 2],
+                         (ch + (7 if GATHER else nm.TCB_II)) & 0x7FFFF, 0, 0]
             elif kind == "W":
                 grp = self.groups[j]
-                ch = al["WCH0"] + nm.TCB * 3 * (self.gmax - len(grp))
+                ch = al["WCH0"] + (GTCB * (self.gmax - len(grp)) if GATHER_W else nm.TCB * 3 * (self.gmax - len(grp)))
                 jobs += [1, thr, al["FTAB"] + FT_SIZE * grp[0], ch, al["WADDR"] + grp[0],
-                         (ch + nm.TCB_II) & 0x7FFFF, len(grp), 0]
+                         (ch + (7 if GATHER_W else nm.TCB_II)) & 0x7FFFF, len(grp), 0]
             else:                                    # F j: layer j's row + weights (j == NL: the head's)
                 b = j % 2 if j < NL else 1
                 ch = al[f"FCH{b}"]
@@ -712,6 +1045,71 @@ def _chain_dma1():
 
 ChainDma1 = _chain_dma1()
 TIMING = ("start", "tcb", "word")
+
+
+class GatherDma(nm.ChainDma):
+    """ChainDma + tap-list (scatter/gather) chains: DMACx TLEN with CHEN loads 8-word TCBs (CP, TPEP,
+    TCEP, EMEP, EIEP, ICEP, IMEP, IIEP; the chain pointer at IIEP, loaded downwards); block i of ICEP
+    words starts at EIEP + TL[i] (post-modify, measured on the unit; 27-bit signed offsets); internal sequential.
+    `tap` cycles per tap-list entry (a guess) on top of `tcb` per TCB."""
+
+    def __init__(self, sim, tap=4, **kw):
+        super().__init__(sim, **kw)
+        self.c_tap, self.tl = tap, False
+
+    def _start(self, ctl, cp):
+        self.tl = bool(ctl & TLEN) and cp is not None
+        super()._start(ctl, cp)
+
+    def _load(self, cp, now):
+        if not self.tl:
+            return super()._load(cp, now)
+        p = self._int(cp)
+        r = self.rd0
+        t = dict(ii=self._int(r(p)), im=nm.s32(r(p - 1)), ic=r(p - 2) & 0xFFFF or 0x10000, ei=r(p - 3),
+                 em=nm.s32(r(p - 4)), tc=r(p - 5) & 0xFFFF, tp=self._int(r(p - 6)), cp=r(p - 7) & 0x7FFFF)
+        def s27(v):
+            v &= 0x7FFFFFF
+            return v - (1 << 27) if v & (1 << 26) else v
+        t["blocks"] = []
+        for i in range(t["tc"]):
+            e0 = t["ei"] + s27(r(t["tp"] + i))          # post-modify (TLPROBE2 on the unit)
+            i0 = t["ii"] + i * t["ic"] * t["im"]
+            t["blocks"].append((e0, i0))
+            self.log.append((self.tran, e0, i0, t["ic"], t["em"], t["im"]))
+            if not self.tran:
+                for k in range(t["ic"]):
+                    self.wr0(i0 + k * t["im"], self.POISON)
+        self.cur = t
+        self.tcbs += 1
+        for reg, k in ((nm.IIEP0, "ii"), (nm.ICEP0, "ic"), (nm.EIEP0, "ei"), (nm.CPEP0, "cp")):
+            self.wr0(reg, t[k] & 0xFFFFFFFF)
+        self.due = math.inf if self.mode == "stall" else             now + self.c_tcb + (self.c_word * t["ic"] + self.c_tap) * t["tc"]
+
+    def _finish(self):
+        t = self.cur
+        if not self.tl:
+            return super()._finish()
+        if self.mode != "nocopy":
+            for e0, i0 in t["blocks"]:
+                for k in range(t["ic"]):
+                    ia, ea = i0 + k * t["im"], e0 + k * t["em"]
+                    src, dst = (ia, ea) if self.tran else (ea, ia)
+                    self.wr0(dst, self.rd0(src))
+        self.words += t["ic"] * t["tc"]
+        self.wr0(nm.ICEP0, 0)
+        self.wr0(nm.ECEP0, 0)
+        now = self.due
+        if t["cp"] and self.chained:
+            self._load(t["cp"], now)
+        else:
+            self.active = False
+            self.cycles_busy += now - self.t0
+            self.wr0(nm.DMAC0, self.rd0(nm.DMAC0) & ~(nm.DMAS | nm.EXTS | nm.CHS))
+
+
+if GATHER:
+    nm.ChainDma = GatherDma
 
 
 class Rig(nf.Rig):
