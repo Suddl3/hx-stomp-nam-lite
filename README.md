@@ -57,7 +57,7 @@ The useful facts from porting and debugging on real hardware. Details and the fu
 
 ## Build, install and recovery
 
-**Easiest: the setup page, [`floor-web/`](floor-web/index.html).** It builds the firmware from your stock file in the browser (and checks it is byte-for-byte the tested build), batch-converts your `.nam` captures into User IR `.wav` files numbered by slot, gives you a printable slot list, and walks through install and recovery. Nothing is uploaded.
+**Easiest: the setup page, [savedadodo.github.io/helix-floor-nam-lite/floor-web/](https://savedadodo.github.io/helix-floor-nam-lite/floor-web/)** (source in [`floor-web/`](floor-web/index.html)). It builds the firmware from your stock file in the browser (and checks it is byte-for-byte the tested build), batch-converts your `.nam` captures into User IR `.wav` files numbered by slot, gives you a printable slot list, and walks through install and recovery. Nothing is uploaded.
 
 Or by hand: see [helix-floor/README.md](helix-floor/README.md). In short: you need Line 6's stock `Helix_Floor_v3.80.0_0x7d01f5efb.hxf`, Python 3.10+ and `capstone`; the build checks every stage and writes a new `.hxf`; install it with Line 6 Updater (Offline Mode, local file); recovery is holding footswitches **6 + 12** at power-on, then installing the stock file. Presets survive.
 
