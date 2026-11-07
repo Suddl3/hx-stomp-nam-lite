@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAM on Helix Floor</title>
+<meta name="description" content="Build NAM A2 Lite firmware for the Line 6 Helix Floor and convert your captures, all in your browser.">
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --text: #1d1d1b; --muted: #5d5b55; --line: #dedbd3;
+  --accent: #b5501f; --accent-ink: #ffffff; --ok: #2f7a3e; --warn: #9a6a00; --bad: #b3261e; --code: #efede7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161614; --panel: #201f1c; --text: #ecebe6; --muted: #a8a59c; --line: #3a3832;
+    --accent: #e0793f; --accent-ink: #1b1209; --ok: #6cc07c; --warn: #e2b44d; --bad: #f08a80; --code: #2a2925;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161614; --panel: #201f1c; --text: #ecebe6; --muted: #a8a59c; --line: #3a3832;
+  --accent: #e0793f; --accent-ink: #1b1209; --ok: #6cc07c; --warn: #e2b44d; --bad: #f08a80; --code: #2a2925;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.9rem; line-height: 1.2; margin: 8px 0 8px; }
+h2 { font-size: 1.3rem; margin: 0 0 6px; }
+h3 { font-size: 1.05rem; margin: 18px 0 6px; }
+p, li { max-width: 72ch; }
+a { color: var(--accent); }
+.lede { color: var(--muted); font-size: 1.05rem; }
+.warn { border-left: 4px solid var(--warn); background: var(--panel); padding: 12px 14px; border-radius: 6px; margin: 16px 0; }
+nav { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 16px 0 8px; font-size: .95rem; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 18px 14px; margin: 18px 0; }
+.num { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-weight: 700; margin-right: 8px; font-size: .95rem; }
+.sub { color: var(--muted); margin-top: 0; }
+button, .btn { font: inherit; background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer; text-decoration: none; display: inline-block; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+input[type=file] { font: inherit; max-width: 100%; }
+input[type=number] { font: inherit; width: 5.5em; padding: 4px 6px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+code, kbd { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+.knob { font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+.status { margin: 10px 0; min-height: 1.5em; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+progress { width: 100%; height: 10px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+td.slot { font-weight: 700; font-variant-numeric: tabular-nums; }
+details { margin: 8px 0; }
+summary { cursor: pointer; color: var(--muted); }
+pre { background: var(--code); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: .82rem; max-height: 220px; }
+.checks label { display: block; margin: 6px 0; }
+@media print {
+  body { background: #fff; color: #000; }
+  nav, .noprint, section:not(#slotlist-print) { display: none !important; }
+  #slotlist-print { display: block !important; border: 0; }
+}
+#slotlist-print { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NAM captures on your Helix Floor</h1>
+  <p class="lede">Build NAM A2 Lite firmware from your own Line 6 file, install it, and turn your <b>.nam</b> captures into files the Floor can play. Everything runs in this browser. Nothing is uploaded.</p>
+  <div class="warn"><b>Unofficial and experimental.</b> Not made or supported by Line 6. Tested on one Helix Floor. Installing modified firmware is at your own risk and may void your warranty. Read <a href="#recovery">Recovery</a> first.</div>
+  <nav class="noprint"><a href="#s1">1 Get ready</a><a href="#s2">2 Build</a><a href="#s3">3 Install</a><a href="#s4">4 Convert captures</a><a href="#s5">5 Play</a><a href="#recovery">Recovery</a><a href="#next">Coming next</a></nav>
+
+  <section id="s1">
+    <h2><span class="num">1</span>Get ready</h2>
+    <div class="checks">
+      <label><input type="checkbox"> I have a <b>Helix Floor</b> on firmware <b>3.80.0</b> (not LT, Rack, Stomp or Stadium).</label>
+      <label><input type="checkbox"> I have Line 6's file <code>Helix_Floor_v3.80.0_0x7d01f5efb.hxf</code>, unchanged (from Line 6's downloads, or saved by Line 6 Updater).</label>
+      <label><input type="checkbox"> I use <b>Chrome or Edge</b> on a computer, with <b>Line 6 Updater</b> and <b>HX Edit</b> installed.</label>
+      <label><input type="checkbox"> I know the recovery (footswitches <b>6 + 12</b> at power-on) and won't rely on this unit until I've tried it.</label>
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2><span class="num">2</span>Build your firmware</h2>
+    <p class="sub">Pick the stock file. The page builds the NAM firmware and checks it is byte-for-byte the build that was tested on a Helix Floor. Takes a few minutes; keep this tab open.</p>
+    <div class="row noprint"><input type="file" id="stock" accept=".hxf"><button id="buildBtn" disabled>Build</button></div>
+    <progress id="prog" value="0" max="8" hidden></progress>
+    <div class="status" id="buildStatus"></div>
+    <div class="row" id="dlRow" hidden><a class="btn" id="dlLink" download>Download the firmware</a><span id="dlMd5" class="muted"></span></div>
+    <details><summary>Build log</summary><pre id="log"></pre></details>
+    <p class="muted">Please don't share the built file: it is Line 6's firmware with changes, not ours or yours to redistribute.</p>
+  </section>
+
+  <section id="s3">
+    <h2><span class="num">3</span>Install it with Line 6 Updater</h2>
+    <ol>
+      <li>On the Floor, select a preset <b>without</b> a NAM block. (The Floor starts on the last preset; this way a power cycle always comes back cleanly.)</li>
+      <li>Close HX Edit. Open <b>Line 6 Updater</b>, choose <b>Offline Mode</b>, then your Helix Floor.</li>
+      <li><b>Choose File</b> → the file from step 2 → <b>Update</b> → <b>Accept</b>. Don't unplug or switch off until it finishes (about 20 minutes).</li>
+      <li>The Floor restarts. If the Updater's last page shows a web error, that's only its info panel; the install is done.</li>
+      <li>After any firmware install the Floor starts on a <b>factory setlist</b>: switch back to your own setlist.</li>
+    </ol>
+  </section>
+
+  <section id="s4">
+    <h2><span class="num">4</span>Convert your captures</h2>
+    <p class="sub">Pick all your <b>.nam</b> A2 Lite captures at once. Each becomes a <b>.wav</b> that HX Edit imports as a User IR (it carries the capture, not a sound). Choose the first free IR slot: the files are numbered in slot order, so the slot is part of each capture's name.</p>
+    <div class="row noprint">
+      <input type="file" id="nams" accept=".nam" multiple>
+      <label>First free slot <input type="number" id="firstSlot" min="1" max="128" value="1"></label>
+    </div>
+    <div class="status" id="convStatus"></div>
+    <div class="tablewrap"><table id="convTable" hidden>
+      <thead><tr><th>Slot</th><th>File (= IR name)</th><th>Capture</th><th>Notes</th></tr></thead><tbody></tbody>
+    </table></div>
+    <div class="row noprint" id="convActions" hidden>
+      <button id="zipBtn">Download all (.zip)</button>
+      <button class="secondary" id="csvBtn">Slot list (.csv)</button>
+      <button class="secondary" id="printBtn">Print slot list</button>
+    </div>
+  </section>
+
+  <section id="slotlist-print">
+    <h2>NAM captures by User IR slot</h2>
+    <table><thead><tr><th>Slot</th><th>IR name</th><th>Capture</th></tr></thead><tbody id="printBody"></tbody></table>
+  </section>
+
+  <section id="s5">
+    <h2><span class="num">5</span>Load your captures and play</h2>
+    <ol>
+      <li>Unzip the download. In <b>HX Edit</b>, open <b>Impulses</b>, select the first slot from step 4, and import the <b>.wav</b> files in name order. Check each one landed in the slot its name starts with.</li>
+      <li>On the Floor, add a block: <b>Amp → NAM → NAM A2 Lite</b>.</li>
+      <li>Turn <span class="knob">Model</span> to the slot number. The block's title shows the capture's IR name, which starts with its slot number, so you can scroll by name.</li>
+    </ol>
+    <h3>The knobs</h3>
+    <div class="tablewrap"><table>
+      <tr><td class="knob">Model</td><td>Which capture plays: the User IR slot (1–128) that holds it. A slot with a normal cab IR, or nothing, is silent.</td></tr>
+      <tr><td class="knob">Input</td><td>Gain into the capture, −20 to +20 dB; 0 dB at 5.0.</td></tr>
+      <tr><td class="knob">Bass / Mid / Treble / Presence</td><td>Tone stack after the capture, ±12 dB, flat at 5.0.</td></tr>
+      <tr><td class="knob">Ch Vol</td><td>Output level; 0 dB at 5.0.</td></tr>
+    </table></div>
+    <h3>How many, and where</h3>
+    <ul>
+      <li>Up to <b>two NAM blocks per path</b> (Path 1 runs on one DSP, Path 2 on the other): four per preset.</li>
+      <li>One NAM uses about <b>35% of a DSP</b>. Two on one path leave room for little else, so the layout that works: <b>both NAMs on one path, your effects on the other</b>, with Path 1 feeding Path 2. A stereo rig: Split Y → NAM | NAM → Join.</li>
+      <li>Use a <b>full-rig capture</b> (amp + cab) and you can drop the IR blocks.</li>
+      <li>The Floor refuses a block that would overload a DSP, so a preset can't crackle from too many blocks.</li>
+      <li><b>Build and edit NAM presets on the Floor, not in HX Edit.</b> HX Edit doesn't know the NAM model and can drop NAM blocks when it rewrites a preset.</li>
+    </ul>
+  </section>
+
+  <section id="recovery">
+    <h2>Recovery, or going back to stock</h2>
+    <ol>
+      <li>Switch the Floor off. Hold footswitches <b>6 + 12</b> and switch it on; keep holding until it shows update mode.</li>
+      <li>In Line 6 Updater (Offline Mode), install the stock <code>Helix_Floor_v3.80.0_0x7d01f5efb.hxf</code>.</li>
+    </ol>
+    <p>Your presets and IRs stay on the unit. NAM blocks in presets go silent on stock firmware.</p>
+  </section>
+
+  <section id="next">
+    <h2>Coming next</h2>
+    <ul>
+      <li><b>Read your IR slots over USB:</b> this page connects to the Floor and lists which slot holds which capture, so you never have to keep track.</li>
+      <li>A faster NAM kernel, for more room next to two NAM blocks.</li>
+    </ul>
+    <p class="muted">Source and notes: <a href="https://github.com/savedadodo/hx-stomp-nam-lite">the repository</a>. Captures convert with upstream hx-stomp-nam-lite's converter.</p>
+  </section>
+</main>
+
+<script src="../web/nam2ir-core.js"></script>
+<script>
+"use strict";
+// ---------- build
+var stock = document.getElementById("stock"), buildBtn = document.getElementById("buildBtn");
+var prog = document.getElementById("prog"), bst = document.getElementById("buildStatus"), logEl = document.getElementById("log");
+var worker = null;
+stock.addEventListener("change", function () { buildBtn.disabled = !stock.files.length; });
+buildBtn.addEventListener("click", async function () {
+  buildBtn.disabled = true; stock.disabled = true; prog.hidden = false; prog.value = 0; logEl.textContent = "";
+  document.getElementById("dlRow").hidden = true;
+  bst.className = "status"; bst.textContent = "Starting...";
+  var buf = await stock.files[0].arrayBuffer();
+  if (!worker) worker = new Worker("floor-worker.js");
+  worker.onmessage = function (ev) {
+    var m = ev.data;
+    if (m.type === "progress") { prog.value = m.step; bst.textContent = "Step " + m.step + " of " + m.of + ": " + m.text + "..."; }
+    else if (m.type === "log") { logEl.textContent += m.text; }
+    else if (m.type === "error") { bst.className = "status bad"; bst.textContent = m.text; buildBtn.disabled = false; stock.disabled = false; }
+    else if (m.type === "done") {
+      prog.value = prog.max;
+      var url = URL.createObjectURL(new Blob([m.bytes], { type: "application/octet-stream" }));
+      var a = document.getElementById("dlLink"); a.href = url; a.download = m.file;
+      document.getElementById("dlMd5").textContent = "MD5 " + m.md5;
+      document.getElementById("dlRow").hidden = false;
+      bst.className = "status " + (m.pinned ? "ok" : "bad");
+      bst.textContent = m.pinned ? "Done. This is exactly the build that was tested on a Helix Floor."
+        : "Built, but it differs from the tested build. Don't install it; please report this.";
+      buildBtn.disabled = false; stock.disabled = false;
+    }
+  };
+  worker.postMessage({ stock: buf }, [buf]);
+});
+
+// ---------- convert + slot map
+var nams = document.getElementById("nams"), first = document.getElementById("firstSlot");
+var cst = document.getElementById("convStatus"), table = document.getElementById("convTable");
+var results = [];
+function clean(s) { return String(s).replace(/\.nam$/i, "").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim(); }
+function shorten(s, n) {          // keep the start and the end, where captures usually differ
+  if (s.length <= n) return s;
+  var head = Math.ceil((n - 1) / 2), tail = n - 1 - head;
+  return (s.slice(0, head).trim() + "~" + s.slice(s.length - tail).trim());
+}
+function pad(n) { return (n < 10 ? "00" : n < 100 ? "0" : "") + n; }
+async function convertAll() {
+  results = [];
+  var files = Array.prototype.slice.call(nams.files).sort(function (a, b) { return a.name.localeCompare(b.name); });
+  if (!files.length) return;
+  var slot = Math.max(1, Math.min(128, parseInt(first.value, 10) || 1)), bad = 0;
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i], r = { src: f.name };
+    try {
+      var c = NAM2IR.convert(await f.text());
+      if (slot > 128) throw new Error("No slot left (the Floor has 128).");
+      r.slot = slot++; r.wav = c.wav; r.info = c.info;
+      r.name = pad(r.slot) + " " + shorten(clean(f.name), 26);
+    } catch (e) { r.err = e.message; bad++; }
+    results.push(r);
+  }
+  var tb = table.querySelector("tbody"); tb.textContent = "";
+  var pb = document.getElementById("printBody"); pb.textContent = "";
+  results.forEach(function (r) {
+    var tr = document.createElement("tr");
+    var notes = (r.err ? r.err : (r.info.warnings || []).join(" ")).replace(/the Stomp/g, "the Floor").replace(/Stomp/g, "Floor");
+    var cap = r.err ? r.src : [r.info.name, r.info.gear, r.info.modeledBy && "by " + r.info.modeledBy].filter(Boolean).join(" · ") || r.src;
+    [r.err ? "–" : r.slot, r.err ? r.src : r.name + ".wav", cap, notes].forEach(function (v, k) {
+      var td = document.createElement("td"); td.textContent = v; if (k === 0) td.className = "slot"; if (r.err && k === 3) td.className = "bad"; tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+    if (!r.err) { var p = document.createElement("tr"); [r.slot, r.name, cap].forEach(function (v) { var td = document.createElement("td"); td.textContent = v; p.appendChild(td); }); pb.appendChild(p); }
+  });
+  table.hidden = false;
+  var good = results.length - bad;
+  document.getElementById("convActions").hidden = !good;
+  cst.className = "status " + (bad ? "bad" : "ok");
+  cst.textContent = good + " capture" + (good === 1 ? "" : "s") + " converted" + (bad ? ", " + bad + " skipped (see Notes)." : ".");
+}
+nams.addEventListener("change", convertAll);
+first.addEventListener("change", function () { if (nams.files.length) convertAll(); });
+
+// a store-only .zip (no compression), enough for a handful of 8 KB .wav files
+var CRC = (function () { var t = []; for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u) { var c = 0xFFFFFFFF; for (var i = 0; i < u.length; i++) c = CRC[(c ^ u[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zip(entries) {
+  var enc = new TextEncoder(), parts = [], central = [], off = 0;
+  entries.forEach(function (e) {
+    var name = enc.encode(e.name), data = new Uint8Array(e.data), crc = crc32(data);
+    var h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(8, 0, true);
+    h.setUint32(14, crc, true); h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(h.buffer), name, data);
+    var c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true);
+    c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true);
+    c.setUint16(28, name.length, true); c.setUint32(42, off, true);
+    central.push(new Uint8Array(c.buffer), name);
+    off += 30 + name.length + data.length;
+  });
+  var csize = central.reduce(function (s, p) { return s + p.length; }, 0);
+  var end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+  end.setUint32(12, csize, true); end.setUint32(16, off, true);
+  return new Blob(parts.concat(central, [new Uint8Array(end.buffer)]), { type: "application/zip" });
+}
+function save(blob, name) { var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000); }
+document.getElementById("zipBtn").addEventListener("click", function () {
+  save(zip(results.filter(function (r) { return !r.err; }).map(function (r) { return { name: r.name + ".wav", data: r.wav }; })), "NAM captures for Helix Floor.zip");
+});
+document.getElementById("csvBtn").addEventListener("click", function () {
+  var q = function (s) { return '"' + String(s).replace(/"/g, '""') + '"'; };
+  var rows = [["Slot", "IR name", "Source file", "Capture", "Gear", "Modeled by"]].concat(results.filter(function (r) { return !r.err; }).map(function (r) {
+    return [r.slot, r.name, r.src, r.info.name, r.info.gear, r.info.modeledBy];
+  }));
+  save(new Blob([rows.map(function (r) { return r.map(q).join(","); }).join("\r\n")], { type: "text/csv" }), "NAM slot list.csv");
+});
+document.getElementById("printBtn").addEventListener("click", function () { window.print(); });
+</script>
+</body>
+</html>

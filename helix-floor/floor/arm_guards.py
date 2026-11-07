@@ -28,7 +28,6 @@ usage: arm_guards.py [--bytes]
 import struct
 import sys
 
-import capstone
 
 CAVE = 0x10011870
 TRAMP = 0x28135070
@@ -317,6 +316,7 @@ def tramp_bytes():
 
 
 def show(code, base):
+    import capstone                     # (only for the listing; the build itself does not need it)
     md = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
     md.skipdata = True
     for ins in md.disasm(code, base):
