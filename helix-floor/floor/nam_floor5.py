@@ -454,6 +454,24 @@ x_w: R1 = DM(DMAC0);
 x_idle:
     R0 = DM(SAVE + 1);"""),
     SHARE_PATCHES[3],
+    # A bounded abort wait can expire while DMA is still draining. Keep the
+    # descriptors intact then; count the failure on both exit paths.
+    ("""    IF NE JUMP da_w;
+da_ok:""", """    IF NE JUMP da_w;
+    JUMP da_count;                      // still busy: defer descriptor cleanup
+da_ok:"""),
+    ("""    DM(CPEP0) = R0;
+    R0 = DM(REP + R_TIMEOUTS);""", """    DM(CPEP0) = R0;
+da_count:
+    R0 = DM(REP + R_TIMEOUTS);"""),
+    # Admission already proved every BUSYM bit clear. A prior abort may have
+    # left a count/chain pointer behind, so clear them only here, after idle.
+    ("""m_idle:
+    R0 = DM(S_INIT, I6);""", """m_idle:
+    R0 = 0;
+    DM(ICEP0) = R0;
+    DM(CPEP0) = R0;
+    R0 = DM(S_INIT, I6);"""),
 ]
 
 
